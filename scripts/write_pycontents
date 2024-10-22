@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+
+"""Script to save contents of all Python files in a directory tree to a single file.
+
+This script can be installed in /home/bin for easy command-line access.
+Installation:
+    1. Save this file as 'save-py-contents' in /home/bin
+    2. Make it executable: chmod +x /home/bin/save-py-contents
+    3. Ensure /home/bin is in your PATH
+"""
+
+import os
+import sys
+import argparse
+import logging
+from typing import Optional
+from datetime import datetime
+
+# Configure logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Create console handler with formatting
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(
+    logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+)
+logger.addHandler(console_handler)
+
+def write_pycontents(
+    folder_path: str, 
+    output_file: Optional[str] = None,
+    encoding: str = 'utf-8'
+) -> str:
+    """Write contents of all Python files in a directory tree to a single file.
+
+    Parameters
+    ----------
+    folder_path : str
+        Path to the root directory to start searching for Python files.
+    output_file : str, optional
+        Path to the output file. If None, generates a default filename with timestamp.
+    encoding : str, default='utf-8'
+        File encoding to use for reading and writing files.
+
+    Returns
+    -------
+    str
+        Path to the output file that was created.
+
+    Notes
+    -----
+    The output file will contain the contents of all .py files found in the
+    directory tree, separated by clear delimiters and file path information.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the specified folder_path doesn't exist.
+    PermissionError
+        If there are insufficient permissions to read files or write output.
+    """
+    # Validate input directory
+    if not os.path.isdir(folder_path):
+        logger.error(f"Directory not found: {folder_path}")
+        raise FileNotFoundError(f"Directory not found: {folder_path}")
+
+    # Generate default output filename if none provided
+    if output_file is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"python_contents_{timestamp}.txt"
+
+    # Dictionary to store file paths and their contents
+    python_files = {}
+    files_processed = 0
+    files_failed = 0
+
+    # Walk through the directory tree and collect Python files
+    logger.info(f"Starting to scan directory: {folder_path}")
+    for root, _, files in os.walk(folder_path):
+        for file in files:
+            if file.endswith('.py'):
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, 'r', encoding=encoding) as f:
+                        python_files[file_path] = f.read()
+                        files_processed += 1
+                        logger.debug(f"Successfully read: {file_path}")
+                except Exception as e:
+                    error_msg = f"Could not read file: {str(e)}"
+                    python_files[file_path] = f"ERROR: {error_msg}"
+                    logger.error(f"Error reading {file_path}: {str(e)}")
+                    files_failed += 1
+
+    if not python_files:
+        logger.warning(f"No Python files found in {folder_path}")
+        return output_file
+
+    # Write collected contents to output file
+    try:
+        logger.info(f"Writing contents to: {output_file}")
+        with open(output_file, 'w', encoding=encoding) as out_file:
+            out_file.write(f"Python Files Content Export\n")
+            out_file.write(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            out_file.write(f"Source directory: {os.path.abspath(folder_path)}\n")
+            out_file.write("=" * 80 + "\n\n")
+
+            for file_path, content in sorted(python_files.items()):
+                out_file.write(f"File: {file_path}\n")
+                out_file.write("-" * 80 + "\n")
+                out_file.write(content)
+                out_file.write("\n" + "=" * 80 + "\n\n")
+
+        logger.info(f"Successfully processed {files_processed} files "
+                   f"({files_failed} failed) to {output_file}")
+    except Exception as e:
+        logger.error(f"Error writing to output file: {str(e)}")
+        raise
+
+    return output_file
+
+def main():
+    """Process command line arguments and execute the script."""
+    parser = argparse.ArgumentParser(
+        description="Save contents of all Python files in a directory tree to a single file."
+    )
+    parser.add_argument(
+        "folder_path",
+        help="Path to the directory to search for Python files"
+    )
+    parser.add_argument(
+        "-o", "--output",
+        help="Output file path (default: python_contents_TIMESTAMP.txt)",
+        default=None
+    )
+    parser.add_argument(
+        "--encoding",
+        help="File encoding to use (default: utf-8)",
+        default='utf-8'
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging"
+    )
+
+    args = parser.parse_args()
+
+    # Set debug level if requested
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+
+    try:
+        output_file = write_pycontents(
+            args.folder_path,
+            args.output,
+            args.encoding
+        )
+    except Exception as e:
+        logger.error(f"Script execution failed: {str(e)}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
