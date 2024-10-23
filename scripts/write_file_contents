@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+
+"""Script to save contents of files with specified extensions in a directory tree to a single file.
+
+This script can be installed in /home/bin for easy command-line access.
+Installation:
+    1. Save this file as 'write-file-contents' in /home/bin
+    2. Make it executable: chmod +x /home/bin/write-file-contents
+    3. Ensure /home/bin is in your PATH
+"""
+
+import os
+import sys
+import argparse
+import logging
+from typing import Optional, List, Dict, Set
+from datetime import datetime
+
+# Configure logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Create console handler with formatting
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(
+    logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+)
+logger.addHandler(console_handler)
+
+# Default paths to ignore
+DEFAULT_IGNORE_PATTERNS = {
+    # Virtual environments
+    '.venv', 'venv', 'env', '.env', 'virtualenv',
+    # Python cache
+    '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache',
+    # Version control
+    '.git', '.svn', '.hg',
+    # Build and distribution
+    'build', 'dist', 'node_modules',
+    # IDE specific
+    '.idea', '.vscode', '.vs',
+    # Misc
+    '.tox', '.eggs'
+}
+
+def should_skip_path(path: str, ignore_patterns: Set[str]) -> bool:
+    """
+    Check if a path should be skipped based on ignore patterns.
+
+    Parameters
+    ----------
+    path : str
+        The path to check
+    ignore_patterns : Set[str]
+        Set of directory names to ignore
+
+    Returns
+    -------
+    bool
+        True if the path should be skipped, False otherwise
+    """
+    path_parts = path.split(os.sep)
+    return any(part in ignore_patterns for part in path_parts)
+
+def write_file_contents(
+    folder_path: str,
+    extensions: List[str],
+    output_file: Optional[str] = None,
+    encoding: str = 'utf-8',
+    ignore_patterns: Optional[Set[str]] = None
+) -> str:
+    """Write contents of all files with specified extensions in a directory tree to a single file.
+
+    Parameters
+    ----------
+    folder_path : str
+        Path to the root directory to start searching for files.
+    extensions : List[str]
+        List of file extensions to include (without dots, e.g., ['py', 'yaml', 'toml']).
+    output_file : str, optional
+        Path to the output file. If None, generates a default filename with timestamp.
+    encoding : str, default='utf-8'
+        File encoding to use for reading and writing files.
+    ignore_patterns : Set[str], optional
+        Set of directory names to ignore. If None, uses DEFAULT_IGNORE_PATTERNS.
+
+    Returns
+    -------
+    str
+        Path to the output file that was created.
+    """
+    # Validate input directory
+    if not os.path.isdir(folder_path):
+        logger.error(f"Directory not found: {folder_path}")
+        raise FileNotFoundError(f"Directory not found: {folder_path}")
+
+    # Use default ignore patterns if none provided
+    if ignore_patterns is None:
+        ignore_patterns = DEFAULT_IGNORE_PATTERNS
+
+    # Clean and validate extensions
+    extensions = [ext.lower().lstrip('.') for ext in extensions]
+    if not extensions:
+        logger.error("No file extensions specified")
+        raise ValueError("No file extensions specified")
+
+    # Generate default output filename if none provided
+    if output_file is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ext_string = '_'.join(extensions)
+        output_file = f"file_contents_{ext_string}_{timestamp}.txt"
+
+    # Dictionary to store file paths and their contents
+    collected_files: Dict[str, str] = {}
+    files_processed = 0
+    files_failed = 0
+    dirs_skipped = 0
+
+    # Walk through the directory tree and collect files
+    logger.info(f"Starting to scan directory: {folder_path}")
+    for root, dirs, files in os.walk(folder_path):
+        # Skip ignored directories
+        if should_skip_path(root, ignore_patterns):
+            dirs_skipped += 1
+            dirs.clear()  # Clear dirs list to prevent further descent
+            continue
+
+        # Remove ignored directories from dirs list to prevent walking into them
+        dirs[:] = [d for d in dirs if d not in ignore_patterns]
+
+        for file in files:
+            if any(file.lower().endswith(f'.{ext}') for ext in extensions):
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, 'r', encoding=encoding) as f:
+                        collected_files[file_path] = f.read()
+                        files_processed += 1
+                        logger.debug(f"Successfully read: {file_path}")
+                except Exception as e:
+                    error_msg = f"Could not read file: {str(e)}"
+                    collected_files[file_path] = f"ERROR: {error_msg}"
+                    logger.error(f"Error reading {file_path}: {str(e)}")
+                    files_failed += 1
+
+    if not collected_files:
+        extensions_str = ', '.join(f'.{ext}' for ext in extensions)
+        logger.warning(f"No files with extensions {extensions_str} found in {folder_path}")
+        return output_file
+
+    # Write collected contents to output file
+    try:
+        logger.info(f"Writing contents to: {output_file}")
+        with open(output_file, 'w', encoding=encoding) as out_file:
+            out_file.write(f"File Content Export\n")
+            out_file.write(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            out_file.write(f"Source directory: {os.path.abspath(folder_path)}\n")
+            out_file.write(f"File extensions: {', '.join(f'.{ext}' for ext in extensions)}\n")
+            out_file.write(f"Ignored patterns: {', '.join(sorted(ignore_patterns))}\n")
+            out_file.write("=" * 80 + "\n\n")
+
+            for file_path, content in sorted(collected_files.items()):
+                out_file.write(f"File: {file_path}\n")
+                out_file.write("-" * 80 + "\n")
+                out_file.write(content)
+                out_file.write("\n" + "=" * 80 + "\n\n")
+
+        logger.info(f"Successfully processed {files_processed} files "
+                   f"({files_failed} failed, {dirs_skipped} directories skipped) "
+                   f"to {output_file}")
+    except Exception as e:
+        logger.error(f"Error writing to output file: {str(e)}")
+        raise
+
+    return output_file
+
+def main():
+    """Process command line arguments and execute the script."""
+    parser = argparse.ArgumentParser(
+        description="Save contents of files with specified extensions in a directory tree to a single file."
+    )
+    parser.add_argument(
+        "folder_path",
+        help="Path to the directory to search for files"
+    )
+    parser.add_argument(
+        "-e", "--extensions",
+        nargs="+",
+        required=True,
+        help="File extensions to include (without dots, e.g., py yaml toml)"
+    )
+    parser.add_argument(
+        "-o", "--output",
+        help="Output file path (default: file_contents_EXTENSIONS_TIMESTAMP.txt)",
+        default=None
+    )
+    parser.add_argument(
+        "--encoding",
+        help="File encoding to use (default: utf-8)",
+        default='utf-8'
+    )
+    parser.add_argument(
+        "--ignore",
+        nargs="+",
+        help="Additional directory names to ignore",
+        default=[]
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging"
+    )
+
+    args = parser.parse_args()
+
+    # Set debug level if requested
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+
+    # Combine default ignore patterns with user-provided ones
+    ignore_patterns = DEFAULT_IGNORE_PATTERNS.union(set(args.ignore))
+
+    try:
+        output_file = write_file_contents(
+            args.folder_path,
+            args.extensions,
+            args.output,
+            args.encoding,
+            ignore_patterns
+        )
+    except Exception as e:
+        logger.error(f"Script execution failed: {str(e)}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
