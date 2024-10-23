@@ -1,5 +1,7 @@
 # Scripts
 
+A set of useful scripts for development.
+
 ## Python Scripts
 
 ### - `write_file_contents`
