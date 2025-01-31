@@ -13,6 +13,7 @@ import os
 import sys
 import argparse
 import logging
+from pathlib import Path
 from typing import Optional, List, Dict, Set
 from datetime import datetime
 
@@ -22,9 +23,7 @@ logger.setLevel(logging.INFO)
 
 # Create console handler with formatting
 console_handler = logging.StreamHandler()
-console_handler.setFormatter(
-    logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-)
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 logger.addHandler(console_handler)
 
 # Default paths to ignore
@@ -40,27 +39,65 @@ DEFAULT_IGNORE_PATTERNS = {
     # IDE specific
     '.idea', '.vscode', '.vs',
     # Misc
-    '.tox', '.eggs'
+    '.tox', '.eggs', '.egg-info', 'data'
 }
 
-def should_skip_path(path: str, ignore_patterns: Set[str]) -> bool:
+def should_skip_path(path: Path, ignore_patterns: Set[str]) -> bool:
     """
     Check if a path should be skipped based on ignore patterns.
 
     Parameters
     ----------
-    path : str
-        The path to check
+    path : Path
+        The path to check.
     ignore_patterns : Set[str]
-        Set of directory names to ignore
+        Set of directory names or patterns to ignore.
 
     Returns
     -------
     bool
-        True if the path should be skipped, False otherwise
+        True if the path should be skipped, False otherwise.
     """
-    path_parts = path.split(os.sep)
-    return any(part in ignore_patterns for part in path_parts)
+    for part in path.parts:
+        if part in ignore_patterns or any(part.endswith(pattern) for pattern in ignore_patterns if pattern.startswith('.')):
+            logger.debug(f"Skipping ignored path: {path}")
+            return True
+    return False
+
+def generate_tree(path: Path, ignore_patterns: Set[str], prefix: str = '') -> str:
+    """Generate a tree-like representation of the directory structure.
+    
+    Parameters
+    ----------
+    path : Path
+        The root path to start generating the tree from.
+    ignore_patterns : Set[str]
+        Set of directory names or patterns to ignore.
+    prefix : str
+        Prefix for the current line (used for recursion).
+        
+    Returns
+    -------
+    str
+        Tree-like string representation of the directory structure.
+    """
+    if should_skip_path(path, ignore_patterns):
+        return ''
+        
+    tree = []
+    entries = sorted(path.iterdir(), key=lambda x: (x.is_file(), x.name))
+    
+    for i, entry in enumerate(entries):
+        is_last = i == len(entries) - 1
+        node = '└──' if is_last else '├──'
+        if entry.is_file():
+            tree.append(f"{prefix}{node} {entry.name}")
+        elif entry.is_dir() and not should_skip_path(entry, ignore_patterns):
+            tree.append(f"{prefix}{node} {entry.name}")
+            next_prefix = f"{prefix}{'    ' if is_last else '│   '}"
+            tree.append(generate_tree(entry, ignore_patterns, next_prefix))
+            
+    return '\n'.join(filter(None, tree))
 
 def write_file_contents(
     folder_path: str,
@@ -70,75 +107,55 @@ def write_file_contents(
     ignore_patterns: Optional[Set[str]] = None
 ) -> str:
     """Write contents of all files with specified extensions in a directory tree to a single file.
-
-    Parameters
-    ----------
-    folder_path : str
-        Path to the root directory to start searching for files.
-    extensions : List[str]
-        List of file extensions to include (without dots, e.g., ['py', 'yaml', 'toml']).
-    output_file : str, optional
-        Path to the output file. If None, generates a default filename with timestamp.
-    encoding : str, default='utf-8'
-        File encoding to use for reading and writing files.
-    ignore_patterns : Set[str], optional
-        Set of directory names to ignore. If None, uses DEFAULT_IGNORE_PATTERNS.
-
-    Returns
-    -------
-    str
-        Path to the output file that was created.
     """
-    # Validate input directory
-    if not os.path.isdir(folder_path):
+    folder_path = Path(folder_path)
+    if not folder_path.is_dir():
         logger.error(f"Directory not found: {folder_path}")
         raise FileNotFoundError(f"Directory not found: {folder_path}")
 
-    # Use default ignore patterns if none provided
     if ignore_patterns is None:
         ignore_patterns = DEFAULT_IGNORE_PATTERNS
 
-    # Clean and validate extensions
-    extensions = [ext.lower().lstrip('.') for ext in extensions]
+    extensions = {ext.lower().lstrip('.') for ext in extensions}
     if not extensions:
         logger.error("No file extensions specified")
         raise ValueError("No file extensions specified")
 
-    # Generate default output filename if none provided
     if output_file is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         ext_string = '_'.join(extensions)
         output_file = f"file_contents_{ext_string}_{timestamp}.txt"
 
-    # Dictionary to store file paths and their contents
     collected_files: Dict[str, str] = {}
     files_processed = 0
     files_failed = 0
     dirs_skipped = 0
 
-    # Walk through the directory tree and collect files
     logger.info(f"Starting to scan directory: {folder_path}")
+    
+    # Generate tree structure
+    tree_structure = "Project structure:\n.\n" + generate_tree(folder_path, ignore_patterns)
+    
     for root, dirs, files in os.walk(folder_path):
-        # Skip ignored directories
-        if should_skip_path(root, ignore_patterns):
+        root_path = Path(root)
+        if should_skip_path(root_path, ignore_patterns):
             dirs_skipped += 1
-            dirs.clear()  # Clear dirs list to prevent further descent
+            dirs.clear()
             continue
 
-        # Remove ignored directories from dirs list to prevent walking into them
         dirs[:] = [d for d in dirs if d not in ignore_patterns]
 
         for file in files:
             if any(file.lower().endswith(f'.{ext}') for ext in extensions):
-                file_path = os.path.join(root, file)
+                file_path = root_path / file
                 try:
                     with open(file_path, 'r', encoding=encoding) as f:
-                        collected_files[file_path] = f.read()
+                        collected_files[str(file_path)] = f.read()
                         files_processed += 1
                         logger.debug(f"Successfully read: {file_path}")
                 except Exception as e:
                     error_msg = f"Could not read file: {str(e)}"
-                    collected_files[file_path] = f"ERROR: {error_msg}"
+                    collected_files[str(file_path)] = f"ERROR: {error_msg}"
                     logger.error(f"Error reading {file_path}: {str(e)}")
                     files_failed += 1
 
@@ -147,16 +164,16 @@ def write_file_contents(
         logger.warning(f"No files with extensions {extensions_str} found in {folder_path}")
         return output_file
 
-    # Write collected contents to output file
     try:
         logger.info(f"Writing contents to: {output_file}")
         with open(output_file, 'w', encoding=encoding) as out_file:
             out_file.write(f"File Content Export\n")
             out_file.write(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            out_file.write(f"Source directory: {os.path.abspath(folder_path)}\n")
+            out_file.write(f"Source directory: {folder_path.resolve()}\n")
             out_file.write(f"File extensions: {', '.join(f'.{ext}' for ext in extensions)}\n")
-            out_file.write(f"Ignored patterns: {', '.join(sorted(ignore_patterns))}\n")
-            out_file.write("=" * 80 + "\n\n")
+            out_file.write(f"Ignored patterns: {', '.join(sorted(ignore_patterns))}\n\n")
+            out_file.write(tree_structure)
+            out_file.write("\n" + "=" * 80 + "\n\n")
 
             for file_path, content in sorted(collected_files.items()):
                 out_file.write(f"File: {file_path}\n")
@@ -194,15 +211,15 @@ def main():
         default=None
     )
     parser.add_argument(
-        "--encoding",
-        help="File encoding to use (default: utf-8)",
-        default='utf-8'
-    )
-    parser.add_argument(
-        "--ignore",
+        "-i", "--ignore",
         nargs="+",
         help="Additional directory names to ignore",
         default=[]
+    )
+    parser.add_argument(
+        "--encoding",
+        help="File encoding to use (default: utf-8)",
+        default='utf-8'
     )
     parser.add_argument(
         "--debug",
@@ -220,7 +237,7 @@ def main():
     ignore_patterns = DEFAULT_IGNORE_PATTERNS.union(set(args.ignore))
 
     try:
-        output_file = write_file_contents(
+        write_file_contents(
             args.folder_path,
             args.extensions,
             args.output,
